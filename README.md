@@ -2,31 +2,14 @@
 
 Move a [herdr](https://herdr.dev) pane by pointing at a map.
 
+![Moving the server pane below tests in another workspace](docs/demo.gif)
+
 Inspired by [herdr-pane-mover](https://github.com/osamahbeig/herdr-pane-mover) by osamahbeig, which this plugin reworks into a visual picker. See [Credits](#credits).
 
 Text menus like "move to tab 3, right of the sibling" make you picture the layout in your head.
 Pane Easy Move draws it instead.
 The popup lists every workspace and tab on the left, and draws the selected tab to scale on the right.
 You point at a pane and a side, a ghost shows where your pane will land, and one sentence at the bottom says what will happen.
-
-```
- Move pane  Now at: 1 api › server · 'server'
-
- Workspaces / tabs          │ 2 web › frontend
- 1 api                      │ ┌────────────────────────────┐┌──────────────────┐
-   ● server ·2              │ │ 1  dev server              ││ 2  tests         │
-     + new tab              │ │ web                        ││ web              │
- 2 web                      │ │                            │┌──────────────────┐
-     frontend ·3            │ │                            ││     ▼ here       │
-     + new tab              │ │                            ││     server       │
- + new workspace            │ │                            │└──────────────────┘
-                            │ │                            │┌──────────────────┐
-                            │ │                            ││ 3  logs          │
-                            │ └────────────────────────────┘└──────────────────┘
-
- → Put 'server' below 2 'tests' in 2 web › frontend.
- ←↑→↓ side · Tab/number target pane · Space swap · Enter move · Esc back
-```
 
 ## Install
 
