@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Pane Map: move the current pane by pointing at a drawn map.
+// Pane Easy Move: move the current pane by pointing at a drawn map.
 // Left: every workspace and its tabs. Right: the selected tab drawn to scale.
 // Pick a pane in the map and a side (or the center to swap); a ghost shows
 // where the moving pane will land, and the bottom line says it in words.
@@ -21,7 +21,7 @@ if (process.argv[2] === "--exec") {
       if (r.status !== 0) break;
     }
     try {
-      const dir = process.env.HERDR_PLUGIN_STATE_DIR ?? "/tmp/herdr-pane-map";
+      const dir = process.env.HERDR_PLUGIN_STATE_DIR ?? "/tmp/herdr-pane-easy-move";
       fs.writeFileSync(path.join(dir, "last-exec.json"), JSON.stringify(log, null, 1));
     } catch {}
     process.exit(0);
@@ -30,7 +30,7 @@ if (process.argv[2] === "--exec") {
 }
 
 const herdr = process.env.HERDR_BIN_PATH ?? "herdr";
-const stateDir = process.env.HERDR_PLUGIN_STATE_DIR ?? "/tmp/herdr-pane-map";
+const stateDir = process.env.HERDR_PLUGIN_STATE_DIR ?? "/tmp/herdr-pane-easy-move";
 
 // ---------- herdr data ----------
 
@@ -188,7 +188,7 @@ const ui = {
 // ---------- messages (English default; set language = "ko" in config.toml) ----------
 
 function loadLang() {
-  if (process.env.HERDR_PANE_MAP_LANG) return process.env.HERDR_PANE_MAP_LANG;
+  if (process.env.HERDR_PANE_EASY_MOVE_LANG) return process.env.HERDR_PANE_EASY_MOVE_LANG;
   try {
     const dir = process.env.HERDR_PLUGIN_CONFIG_DIR;
     const m = dir && fs.readFileSync(path.join(dir, "config.toml"), "utf8").match(/^\s*language\s*=\s*"(\w+)"/m);
@@ -579,8 +579,8 @@ function main() {
   const dump = process.argv[2] === "--dump"; // --dump W H [paneId] [rowIndex] [slotPane side]
   let st;
   try { st = gather(dump ? process.argv[5] : null); }
-  catch (e) { process.stderr.write("pane-map: " + e.message + "\n"); process.exit(1); }
-  if (!st.tp) { process.stderr.write("pane-map: " + L.noTarget + "\n"); process.exit(1); }
+  catch (e) { process.stderr.write("pane-easy-move: " + e.message + "\n"); process.exit(1); }
+  if (!st.tp) { process.stderr.write("pane-easy-move: " + L.noTarget + "\n"); process.exit(1); }
   ui.rows = buildRows(st);
   ui.sel = Math.max(0, ui.rows.findIndex((r) => r.kind === "tab" && r.tab.tab_id === st.tp.tab_id));
   if (dump) {

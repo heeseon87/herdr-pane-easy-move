@@ -1,11 +1,11 @@
-# herdr-pane-map
+# herdr-pane-easy-move
 
 Move a [herdr](https://herdr.dev) pane by pointing at a map.
 
 Inspired by [herdr-pane-mover](https://github.com/osamahbeig/herdr-pane-mover) by osamahbeig, which this plugin reworks into a visual picker. See [Credits](#credits).
 
 Text menus like "move to tab 3, right of the sibling" make you picture the layout in your head.
-Pane Map draws it instead.
+Pane Easy Move draws it instead.
 The popup lists every workspace and tab on the left, and draws the selected tab to scale on the right.
 You point at a pane and a side, a ghost shows where your pane will land, and one sentence at the bottom says what will happen.
 
@@ -31,7 +31,7 @@ You point at a pane and a side, a ghost shows where your pane will land, and one
 ## Install
 
 ```bash
-herdr plugin install heeseon87/herdr-pane-map
+herdr plugin install heeseon87/herdr-pane-easy-move
 ```
 
 Requires Node (any recent version). The plugin has no dependencies.
@@ -44,7 +44,7 @@ Add this to `~/.config/herdr/config.toml`, then run `herdr server reload-config`
 [[keys.command]]
 key = "prefix+m"
 type = "plugin_action"
-command = "heeseon87.pane-map.open"
+command = "heeseon87.pane-easy-move.open"
 description = "move this pane"
 ```
 
@@ -69,7 +69,7 @@ Mouse:
 ## Language
 
 The UI is in English by default.
-For Korean, put this in the plugin config file (`herdr plugin config-dir heeseon87.pane-map` prints its folder):
+For Korean, put this in the plugin config file (`herdr plugin config-dir heeseon87.pane-easy-move` prints its folder):
 
 ```toml
 language = "ko"

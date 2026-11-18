@@ -6,8 +6,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const herdr = process.env.HERDR_BIN_PATH ?? "herdr";
-const stateDir = process.env.HERDR_PLUGIN_STATE_DIR ?? "/tmp/herdr-pane-map";
-const pluginId = process.env.HERDR_PLUGIN_ID ?? "heeseon87.pane-map";
+const stateDir = process.env.HERDR_PLUGIN_STATE_DIR ?? "/tmp/herdr-pane-easy-move";
+const pluginId = process.env.HERDR_PLUGIN_ID ?? "heeseon87.pane-easy-move";
 
 let target = process.env.HERDR_PANE_ID || null;
 if (!target) {
