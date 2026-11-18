@@ -2,6 +2,8 @@
 
 Move a [herdr](https://herdr.dev) pane by pointing at a map.
 
+Inspired by [herdr-pane-mover](https://github.com/osamahbeig/herdr-pane-mover) by osamahbeig, which this plugin reworks into a visual picker. See [Credits](#credits).
+
 Text menus like "move to tab 3, right of the sibling" make you picture the layout in your head.
 Pane Map draws it instead.
 The popup lists every workspace and tab on the left, and draws the selected tab to scale on the right.
@@ -94,7 +96,15 @@ The last run's commands and exit codes are written to `last-exec.json` in the pl
 
 ## Credits
 
-The idea of running the moves after the menu closes, and the same-tab bounce, come from [herdr-pane-mover](https://github.com/osamahbeig/herdr-pane-mover) by osamahbeig.
+This plugin is inspired by [herdr-pane-mover](https://github.com/osamahbeig/herdr-pane-mover) by osamahbeig (MIT).
+The map UI is new code, but the approach to moving panes comes from that plugin:
+
+- An action records the focused pane first, then opens the menu that moves it.
+- The moves run as a separate process after the menu closes.
+- A same-tab re-split sends the pane to a temporary tab and brings it back.
+- Left and above placement is a right or down split followed by a swap.
+
+Thank you, osamahbeig.
 
 ## License
 
