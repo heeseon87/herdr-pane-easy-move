@@ -1,0 +1,23 @@
+id = "heeseon87.pane-map"
+name = "Pane Map"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Move the current pane by pointing at a drawn map of every workspace and tab."
+platforms = ["macos", "linux"]
+
+# Bind to a key such as prefix+m. Runs with the origin pane focused, so it can record which pane to move
+# before the popup opens.
+[[actions]]
+id = "open"
+title = "Move this pane (map)…"
+contexts = ["pane", "workspace"]
+command = ["node", "open.js"]
+
+# A popup does not touch the tiled layout, so the map it draws is the real layout.
+[[panes]]
+id = "map"
+title = "Move pane"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["node", "map.js"]
