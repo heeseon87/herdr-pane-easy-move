@@ -1,6 +1,6 @@
 id = "heeseon87.pane-easy-move"
 name = "Pane Easy Move"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.0"
 description = "Move the current pane by pointing at a drawn map of every workspace and tab."
 platforms = ["macos", "linux"]

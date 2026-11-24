@@ -8,7 +8,9 @@ Inspired by [herdr-pane-mover](https://github.com/osamahbeig/herdr-pane-mover) b
 
 Text menus like "move to tab 3, right of the sibling" make you picture the layout in your head.
 Pane Easy Move draws it instead.
-The popup lists every workspace and tab on the left, and draws the selected tab to scale on the right.
+The popup draws every tab as a small map, one row per workspace.
+When there are more tabs than fit, scroll to see the rest.
+Enter zooms into one tab and draws it to scale.
 You point at a pane and a side, a ghost shows where your pane will land, and one sentence at the bottom says what will happen.
 
 ## Install
@@ -37,17 +39,19 @@ Press the key in the pane you want to move.
 
 Keyboard:
 
-- In the list, `↑`/`↓` pick a tab, and `→` or `Enter` enters its map.
-- In the map, `←↑→↓` pick the side, `Tab` or a number picks the target pane, and `Enter` moves.
+- In the overview, `←↑→↓` pick a tab, and `Enter` zooms into it.
+- In the zoomed map, `←↑→↓` pick the side, `Tab` or a number picks the target pane, and `Enter` moves.
 - `Space` toggles swap, which trades places with the target pane.
-- `Esc` goes back to the list, and `Esc` in the list closes the popup.
+- `Esc` goes back to the overview, and `Esc` in the overview closes the popup.
 - On `+ new tab` or `+ new workspace`, `Enter` moves the pane there.
 
 Mouse:
 
-- Hover over a pane in the map to preview. The edge you are near is the side the pane will attach to, and the center means swap.
-- Click once to select a spot, and click the same spot again to move.
-- Click a row in the list to show that tab.
+- Hover over a pane in a small map or in the zoomed map to preview. The edge you are near is the side the pane will attach to, and the center means swap.
+- Click the previewed spot to move. If your terminal does not report hover, the first click picks the spot and a second click moves.
+- Hovering over a tab title or a `+ new` tile picks it, and the picked one lights up.
+- Click a tab title to zoom in. Click `+ new tab` or `+ new workspace` once to move the pane there.
+- The mouse wheel scrolls the overview.
 
 ## Language
 

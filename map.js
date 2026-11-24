@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Pane Easy Move: move the current pane by pointing at a drawn map.
-// Left: every workspace and its tabs. Right: the selected tab drawn to scale.
-// Pick a pane in the map and a side (or the center to swap); a ghost shows
-// where the moving pane will land, and the bottom line says it in words.
+// The first screen draws every tab as a small map, one row per workspace, and
+// scrolls when they do not fit. Enter zooms into one tab. In either view, pick a
+// pane and a side (or the center to swap); a ghost shows where the moving pane
+// will land, and the bottom line says it in words.
 "use strict";
 
 const { spawnSync, spawn } = require("node:child_process");
@@ -115,6 +116,7 @@ const S = {
   ghost: ESC + "1;38;2;255;255;255;48;2;44;85;196m",
   ghostSoft: ESC + "38;2;44;85;196;48;2;214;224;248m",
   moving: ESC + "38;2;194;90;44;48;2;246;226;214m",
+  pick: ESC + "38;2;44;85;196;48;2;228;234;248m",
 };
 
 let W = 100, H = 30, buf = [];
@@ -163,11 +165,10 @@ function flush() {
 
 // ---------- model ----------
 
-// List rows: workspace headers, tabs, "new tab" per workspace, "new workspace".
+// Overview items in order: each workspace's tabs and its "new tab", then "new workspace".
 function buildRows(st) {
   const rows = [];
   for (const ws of st.workspaces) {
-    rows.push({ kind: "ws", ws });
     for (const tab of ws.tabs) rows.push({ kind: "tab", ws, tab });
     rows.push({ kind: "newtab", ws });
   }
@@ -176,12 +177,15 @@ function buildRows(st) {
 }
 
 const ui = {
-  rows: [], sel: 0, top: 0,
-  focus: "list",        // "list" | "map"
+  rows: [], sel: 0,
+  focus: "overview",    // "overview" | "map"
   slot: null,           // { pane: paneId, side: "left"|"right"|"up"|"down"|"swap" }
   armed: null,          // slot key that a click will execute
-  hits: [],             // map pane rects on screen for mouse
-  listX: 0, listW: 0, listY: 0, listH: 0,
+  hits: [],             // pane rects on screen for mouse (overview hits also carry the row index i)
+  tiles: [],            // overview titles and "+ new" tiles on screen: { i, r }
+  ov: null,             // overview geometry from the last render
+  ovTop: 0,             // first overview line on screen
+  follow: true,         // scroll the overview to the selection on the next render
   msg: "",
 };
 
@@ -207,10 +211,6 @@ const MSG = {
     place: (me, where, other, side) => `Put ${me} ${side} ${other} in ${where}.`,
     newTab: "+ new tab",
     newWs: "+ new workspace",
-    pickHint: "Pick a tab or '+ new tab' to draw it here.",
-    newTabBox: (ws) => `New tab (${ws})`,
-    newWsBox: "New workspace",
-    alone: (name) => `'${name}' gets the whole screen`,
     noLayout: "Could not read this tab's layout.",
     movingHere: "<- the pane you are moving (leaves here)",
     swapBox: (name) => `⇄ swap with '${name}'`,
@@ -218,11 +218,12 @@ const MSG = {
     onlySelf: "This tab only holds the pane you are moving. Pick another tab.",
     title: "Move pane",
     now: "Now at: ",
-    listHead: "Workspaces / tabs",
-    keysList: "↑↓ pick tab · → or Enter to the map · or just click · Esc close",
+    zoomHint: (where) => `Enter zooms into ${where}.`,
+    moreAbove: "▲ more above",
+    moreBelow: "▼ more below",
+    keysOverview: "←↑→↓ pick tab · Enter zoom in · wheel scrolls · point at a pane edge and click to move · Esc close",
     keysMap: "←↑→↓ side · Tab/number target pane · Space swap · Enter move · Esc back",
     pickFirst: "Pick a spot first.",
-    noTargets: "No pane to attach to in this tab.",
     swapSameTab: "Swap works only inside one tab (herdr limit).",
     clickAgain: "Click the same spot again, or press Enter, to move.",
     noTarget: "could not find the pane to move",
@@ -237,10 +238,6 @@ const MSG = {
     place: (me, where, other, side) => `${me} pane을 ${where} 탭의 ${other} pane ${side} 붙여.`,
     newTab: "+ 새 탭",
     newWs: "+ 새 워크스페이스",
-    pickHint: "탭이나 '+ 새 탭'을 고르면 여기에 그 탭이 그려져.",
-    newTabBox: (ws) => `새 탭 (${ws})`,
-    newWsBox: "새 워크스페이스",
-    alone: (name) => `'${name}' 혼자 화면을 다 써`,
     noLayout: "이 탭의 배치를 읽지 못했어.",
     movingHere: "← 지금 옮기려는 pane (여기서 빠져)",
     swapBox: (name) => `⇄ '${name}'와 자리 바꿈`,
@@ -248,11 +245,12 @@ const MSG = {
     onlySelf: "이 탭에는 옮길 pane 자신만 있어. 다른 탭을 골라.",
     title: "pane 옮기기",
     now: "지금 위치: ",
-    listHead: "워크스페이스 / 탭",
-    keysList: "↑↓ 탭 고르기 · → 또는 Enter 지도로 · 마우스로 바로 찍어도 돼 · Esc 닫기",
-    keysMap: "←↑→↓ 붙일 쪽 · Tab/숫자 기준 pane · Space 자리 바꾸기 · Enter 실행 · Esc 목록으로",
+    zoomHint: (where) => `Enter를 누르면 ${where} 탭을 크게 보여줘.`,
+    moreAbove: "▲ 위에 더 있어",
+    moreBelow: "▼ 아래에 더 있어",
+    keysOverview: "←↑→↓ 탭 고르기 · Enter 크게 보기 · 휠로 스크롤 · pane 가장자리를 가리키고 클릭하면 옮겨 · Esc 닫기",
+    keysMap: "←↑→↓ 붙일 쪽 · Tab/숫자 기준 pane · Space 자리 바꾸기 · Enter 실행 · Esc 전체 보기로",
     pickFirst: "먼저 붙일 자리를 골라.",
-    noTargets: "이 탭에는 붙일 pane이 없어.",
     swapSameTab: "자리 바꾸기는 같은 탭 안에서만 돼 (herdr 제약).",
     clickAgain: "같은 자리를 한 번 더 누르거나 Enter를 누르면 옮겨.",
     noTarget: "옮길 pane을 찾지 못했어",
@@ -324,34 +322,6 @@ function mapNumber(st, row, paneId) {
   return i < 0 ? "" : String(i + 1);
 }
 
-function drawList(st) {
-  const { listX: x0, listY: y0, listW: w, listH: h } = ui;
-  if (ui.sel < ui.top) ui.top = ui.sel;
-  if (ui.sel >= ui.top + h) ui.top = ui.sel - h + 1;
-  for (let i = 0; i < h; i++) {
-    const r = ui.rows[ui.top + i];
-    if (!r) break;
-    const y = y0 + i;
-    const on = ui.top + i === ui.sel;
-    let text, st0 = "";
-    if (r.kind === "ws") { text = `${r.ws.number} ${r.ws.label}`; st0 = S.bold; }
-    else if (r.kind === "tab") {
-      const here = r.tab.tab_id === st.tp.tab_id;
-      text = `  ${here ? "●" : " "} ${r.tab.label || L.tabWord} ${r.tab.pane_count > 1 ? "·" + r.tab.pane_count : ""}`;
-      if (here) st0 = S.orange;
-    }
-    else if (r.kind === "newtab") { text = "    " + L.newTab; st0 = S.dim; }
-    else { text = L.newWs; st0 = S.dim; }
-    text = fit(text, w);
-    if (on) {
-      const focusSt = ui.focus === "list" ? S.inv : S.inv + S.dim;
-      put(x0, y, text + " ".repeat(Math.max(0, w - strW(text))), focusSt);
-    } else put(x0, y, text, st0);
-  }
-  if (ui.top > 0) put(x0 + w - 1, y0, "▲", S.dim);
-  if (ui.top + h < ui.rows.length) put(x0 + w - 1, y0 + h - 1, "▼", S.dim);
-}
-
 function ghostRect(r, side) {
   const hw = Math.max(1, Math.floor(r.w / 2)), hh = Math.max(1, Math.floor(r.h / 2));
   if (side === "left") return { x: r.x, y: r.y, w: hw, h: r.h };
@@ -369,18 +339,6 @@ function centerText(r, y, s, st) {
 function drawMap(st, x0, y0, w, h) {
   ui.hits = [];
   const row = selRow();
-  if (!row || row.kind === "ws") {
-    put(x0, y0 + 1, L.pickHint, S.dim);
-    return;
-  }
-  if (row.kind === "newtab" || row.kind === "newws") {
-    const r = { x: x0, y: y0, w: Math.min(w, 60), h: Math.min(h, 12) };
-    fill(r.x, r.y, r.w, r.h, S.ghostSoft);
-    box(r.x, r.y, r.w, r.h, S.blue);
-    centerText(r, r.y + Math.floor(r.h / 2) - 1, row.kind === "newtab" ? L.newTabBox(row.ws.label) : L.newWsBox, S.ghostSoft + S.bold);
-    centerText(r, r.y + Math.floor(r.h / 2), L.alone(paneName(st.tp)), S.ghostSoft);
-    return;
-  }
   const lay = layoutOf(st, row.tab);
   if (!lay) { put(x0, y0, L.noLayout, S.dim); return; }
   const A = lay.area;
@@ -399,46 +357,192 @@ function drawMap(st, x0, y0, w, h) {
     const nameSt = isMe ? S.moving + S.bold : S.bold;
     put(r.x + 2, r.y + 1, fit(`${i + 1}  ${p ? paneName(p) : lp.pane_id}`, r.w - 4), nameSt, r.x + r.w - 1);
     if (r.h > 3) put(r.x + 2, r.y + 2, fit(isMe ? L.movingHere : path.basename(p?.cwd || ""), r.w - 4), isMe ? S.moving : S.dim, r.x + r.w - 1);
-    if (isSlot) {
-      const g = ghostRect(r, ui.slot.side);
-      if (ui.slot.side === "swap") {
-        fill(g.x + 1, g.y + 1, g.w - 2, g.h - 2, S.ghostSoft);
-        box(g.x, g.y, g.w, g.h, S.blue);
-        centerText(g, g.y + Math.floor(g.h / 2), L.swapBox(fit(paneName(st.tp), 16)), S.ghostSoft + S.bold);
-      } else {
-        fill(g.x, g.y, g.w, g.h, S.ghost);
-        box(g.x, g.y, g.w, g.h, S.ghost);
-        const arrow = { left: "◀", right: "▶", up: "▲", down: "▼" }[ui.slot.side];
-        centerText(g, g.y + Math.floor(g.h / 2) - (g.h > 4 ? 1 : 0), `${arrow} ${L.here}`, S.ghost);
-        if (g.h > 4) centerText(g, g.y + Math.floor(g.h / 2), fit(paneName(st.tp), 20), S.ghost);
-      }
-    }
+    if (isSlot) drawGhost(st, r);
   });
   if (!dropPanes(st, row).length)
     put(x0, y0 + h, L.onlySelf, S.dim);
 }
 
+// ---------- overview: every tab as a small map ----------
+
+// Thumbnails keep a readable size (60-88 cells wide, 12 rows tall); more tabs scroll instead of shrinking.
+// On a short screen they get shorter so that at least two lines of tabs still show.
+const THUMB_MIN_W = 60, THUMB_MAX_W = 88, THUMB_H = 12;
+
+function ovLayout(st, w, h) {
+  const gridW = w - 4; // inside a workspace frame: a border and a space on each side
+  const cols = Math.max(1, Math.floor((gridW + 2) / (THUMB_MIN_W + 2)));
+  const tw = Math.max(16, Math.min(THUMB_MAX_W, Math.floor((gridW + 2) / cols) - 2));
+  const th = Math.max(4, Math.min(THUMB_H, Math.floor(h / 2) - 2));
+  // One or more lines per workspace, each holding up to `cols` tiles: its tabs, then "+ new tab" at the same size.
+  // Each workspace sits in a heavy frame: its first line carries the top border with the name, its last line the bottom border.
+  const lines = [];
+  let idx = 0;
+  for (const ws of st.workspaces) {
+    let line = null;
+    const open = () => { line = { ws, first: !line, last: false, h: th + 1 + (line ? 0 : 1), items: [] }; lines.push(line); };
+    for (let n = 0; n <= ws.tabs.length; n++) {
+      if (!line || line.items.length === cols) open();
+      line.items.push({ i: idx++, x: line.items.length * (tw + 2), w: tw });
+    }
+    line.last = true;
+    line.h += 2; // the bottom border, then a blank row before the next workspace
+  }
+  lines.push({ ws: null, first: true, last: true, h: th + 1, items: [{ i: idx++, x: 0, w: tw }] });
+  return { gridW, tw, th, lines };
+}
+
+function ovLineOf(g, i) {
+  return Math.max(0, g.lines.findIndex((l) => l.items.some((it) => it.i === i)));
+}
+
+// The largest ovTop that still fills the screen, so scrolling stops at the last line.
+function ovMaxTop(g, h) {
+  let used = 0, t = g.lines.length;
+  while (t > 0 && used + g.lines[t - 1].h <= h) used += g.lines[--t].h;
+  return t;
+}
+
+function drawGhost(st, r) {
+  const g = ghostRect(r, ui.slot.side);
+  if (ui.slot.side === "swap") {
+    fill(g.x + 1, g.y + 1, g.w - 2, g.h - 2, S.ghostSoft);
+    box(g.x, g.y, g.w, g.h, S.blue);
+    centerText(g, g.y + Math.floor(g.h / 2), L.swapBox(fit(paneName(st.tp), 16)), S.ghostSoft + S.bold);
+    return;
+  }
+  fill(g.x, g.y, g.w, g.h, S.ghost);
+  box(g.x, g.y, g.w, g.h, S.ghost);
+  const arrow = { left: "◀", right: "▶", up: "▲", down: "▼" }[ui.slot.side];
+  centerText(g, g.y + Math.floor(g.h / 2) - (g.h > 4 ? 1 : 0), `${arrow} ${L.here}`, S.ghost);
+  if (g.h > 4) centerText(g, g.y + Math.floor(g.h / 2), fit(paneName(st.tp), 20), S.ghost);
+}
+
+function drawThumb(st, i, row, x, y, tw, th, on) {
+  const here = row.tab.tab_id === st.tp.tab_id;
+  const t = fit(`${on ? "▶ " : ""}${row.tab.label || L.tab(row.tab.number)}${here ? " ●" : ""}`, tw);
+  put(x, y, on ? t + " ".repeat(Math.max(0, tw - strW(t))) : t, on ? S.inv : here ? S.orange : S.bold);
+  ui.tiles.push({ i, r: { x, y, w: tw, h: 1 } });
+  const lay = layoutOf(st, row.tab);
+  if (!lay) { put(x, y + 1, fit(L.noLayout, tw), S.dim); return; }
+  const A = lay.area, y0 = y + 1;
+  const sx = (v) => x + Math.round(((v - A.x) * tw) / A.width);
+  const sy = (v) => y0 + Math.round(((v - A.y) * th) / A.height);
+  let ghostAt = null;
+  lay.panes.forEach((lp, n) => {
+    const r = { x: sx(lp.rect.x), y: sy(lp.rect.y) };
+    r.w = sx(lp.rect.x + lp.rect.width) - r.x;
+    r.h = sy(lp.rect.y + lp.rect.height) - r.y;
+    const p = paneById(st, lp.pane_id);
+    const isMe = lp.pane_id === st.target;
+    const isSlot = on && ui.slot && ui.slot.pane === lp.pane_id;
+    ui.hits.push({ pane: lp.pane_id, r, isMe, sameTab: here, i });
+    // The picked tab lights up pale blue, so it is clear which one Enter or a click acts on.
+    if (isMe) fill(r.x, r.y, r.w, r.h, S.moving);
+    else if (on) fill(r.x, r.y, r.w, r.h, S.pick);
+    box(r.x, r.y, r.w, r.h, isMe ? S.orange : on ? S.pick : S.dim);
+    // The name sits on the top border, as herdr draws pane labels, so a 2-row pane still shows it.
+    if (r.w >= 5) put(r.x + 1, r.y, fit(`${n + 1} ${p ? paneName(p) : ""}`, r.w - 2), isMe ? S.orange : on ? S.pick + S.bold : S.n, r.x + r.w - 1);
+    if (isSlot) ghostAt = r;
+  });
+  if (ghostAt) drawGhost(st, ghostAt);
+}
+
+// "+ new tab" / "+ new workspace". Picked, it opens into a ghost of the pane landing there alone.
+// "+ new tab" / "+ new workspace", drawn at the size of a tab. Picked, it fills with a ghost of the pane landing there alone.
+function newTile(st, i, label, x, y, w, h, on) {
+  const t = fit(`${on ? "▶ " : ""}${label}`, w);
+  put(x, y, on ? t + " ".repeat(Math.max(0, w - strW(t))) : t, on ? S.inv : S.dim);
+  const r = { x, y: y + 1, w, h };
+  const mid = r.y + Math.floor(r.h / 2);
+  if (on) {
+    fill(r.x, r.y, r.w, r.h, S.ghost);
+    box(r.x, r.y, r.w, r.h, S.ghost);
+    centerText(r, mid - 1, `▶ ${L.here}`, S.ghost);
+    centerText(r, mid, fit(paneName(st.tp), r.w - 4), S.ghost);
+  } else {
+    put(r.x, r.y, "┌" + "╌".repeat(r.w - 2) + "┐", S.dim);
+    for (let yy = r.y + 1; yy < r.y + r.h - 1; yy++) { put(r.x, yy, "╎", S.dim); put(r.x + r.w - 1, yy, "╎", S.dim); }
+    put(r.x, r.y + r.h - 1, "└" + "╌".repeat(r.w - 2) + "┘", S.dim);
+    centerText(r, mid - (r.h > 4 ? 1 : 0), "+", S.dim);
+  }
+  ui.tiles.push({ i, r: { x, y, w, h: h + 1 } });
+}
+
+function drawOverview(st, x0, y0, w, h) {
+  const g = ovLayout(st, w, h);
+  ui.ov = g; ui.hits = []; ui.tiles = [];
+  if (ui.follow) {
+    const selL = ovLineOf(g, ui.sel);
+    if (ui.ovTop > selL) ui.ovTop = selL;
+    const used = (t) => g.lines.slice(t, selL + 1).reduce((s, l) => s + l.h, 0);
+    while (ui.ovTop < selL && used(ui.ovTop) > h) ui.ovTop++;
+    ui.follow = false;
+  }
+  ui.ovTop = Math.max(0, Math.min(ui.ovTop, ovMaxTop(g, h)));
+  let y = y0, l = ui.ovTop;
+  for (; l < g.lines.length && y + g.lines[l].h <= y0 + h; l++) {
+    const line = g.lines[l];
+    let ty = y;
+    if (line.ws) {
+      // heavy frame around the workspace; blue when it holds the picked tab
+      const picked = ui.rows[ui.sel]?.ws === line.ws;
+      const fst = picked ? S.blue : S.n;
+      const fh = line.h - (line.last ? 1 : 0);
+      for (let yy = y; yy < y + fh; yy++) { put(x0, yy, "┃", fst); put(x0 + w - 1, yy, "┃", fst); }
+      if (line.first) {
+        put(x0, y, "┏" + "━".repeat(w - 2) + "┓", fst);
+        put(x0 + 2, y, ` ${fit(`${line.ws.number} ${line.ws.label}`, w - 8)} `, line.ws.workspace_id === st.tp.workspace_id ? S.orange : picked ? S.blue : S.bold);
+        ty = y + 1;
+      } else if (l === ui.ovTop) {
+        // scrolled into the middle of a workspace: name it on the row above
+        put(x0, y0 - 1, fit(`${line.ws.number} ${line.ws.label} …`, w - strW(L.moreAbove) - 4), S.dim);
+      }
+      if (line.last) put(x0, y + fh - 1, "┗" + "━".repeat(w - 2) + "┛", fst);
+    }
+    for (const it of line.items) {
+      const row = ui.rows[it.i], on = it.i === ui.sel;
+      if (row.kind === "tab") drawThumb(st, it.i, row, x0 + 2 + it.x, ty, g.tw, g.th, on);
+      else newTile(st, it.i, row.kind === "newtab" ? L.newTab : L.newWs, x0 + 2 + it.x, ty, it.w, g.th, on);
+    }
+    y += line.h;
+  }
+  if (ui.ovTop > 0) put(x0 + w - strW(L.moreAbove) - 1, y0 - 1, L.moreAbove, S.dim);
+  if (l < g.lines.length) put(x0 + w - strW(L.moreBelow) - 1, y0 + h, L.moreBelow, S.dim);
+}
+
+function ovMove(st, dir) {
+  const g = ui.ov;
+  if (!g) return;
+  if (dir === "left") ui.sel = Math.max(0, ui.sel - 1);
+  else if (dir === "right") ui.sel = Math.min(ui.rows.length - 1, ui.sel + 1);
+  else {
+    // up/down: the item on the next line whose center is closest to this one's
+    const l = ovLineOf(g, ui.sel), nl = l + (dir === "down" ? 1 : -1);
+    if (nl < 0 || nl >= g.lines.length) return;
+    const center = (line, it) => it.x + it.w / 2;
+    const cx = center(g.lines[l], g.lines[l].items.find((it) => it.i === ui.sel));
+    const next = g.lines[nl];
+    ui.sel = next.items.reduce((a, b) => (Math.abs(center(next, b) - cx) < Math.abs(center(next, a) - cx) ? b : a)).i;
+  }
+  ui.slot = null; ui.armed = null; ui.follow = true;
+}
+
 function render(st) {
   clear();
-  const listW = Math.max(22, Math.min(40, Math.floor(W * 0.28)));
-  Object.assign(ui, { listX: 1, listY: 3, listW, listH: H - 7 });
   const tx = put(1, 0, L.title + "  ", S.bold);
   put(put(tx, 0, L.now, S.dim), 0,
     `${tabTitle(st.workspaces.find((w) => w.workspace_id === st.tp.workspace_id), st.workspaces.flatMap((w) => w.tabs).find((t) => t.tab_id === st.tp.tab_id) || { number: "?" })} · '${paneName(st.tp)}'`, S.orange);
-  put(1, 2, L.listHead, ui.focus === "list" ? S.bold : S.dim);
-  const mx = listW + 4, mw = W - mx - 2;
   const row = selRow();
-  put(mx, 2, row?.kind === "tab" ? fit(tabTitle(row.ws, row.tab), mw) : "", ui.focus === "map" ? S.bold : S.dim);
-  for (let y = 2; y < H - 3; y++) put(listW + 2, y, "│", S.dim);
-  drawList(st);
-  drawMap(st, mx, 3, mw, H - 8);
+  if (ui.focus === "map") {
+    put(1, 2, fit(tabTitle(row.ws, row.tab), W - 2), S.bold);
+    drawMap(st, 1, 3, W - 3, H - 8);
+  } else drawOverview(st, 1, 3, W - 2, H - 7);
   // bottom: the action in words, then keys
-  const d = describe(st);
+  let d = describe(st);
+  if (!d && ui.focus === "overview" && row?.kind === "tab") d = L.zoomHint(tabTitle(row.ws, row.tab));
   put(1, H - 3, d ? "→ " + fit(d, W - 4) : "", S.blue);
-  const keys = ui.focus === "list"
-    ? L.keysList
-    : L.keysMap;
-  put(1, H - 2, fit(keys, W - 2), S.dim);
+  put(1, H - 2, fit(ui.focus === "map" ? L.keysMap : L.keysOverview, W - 2), S.dim);
   if (ui.msg) put(1, H - 1, fit(ui.msg, W - 2), S.orange);
   flush();
 }
@@ -448,13 +552,6 @@ function render(st) {
 function setRowFromSel(st) {
   ui.slot = ui.focus === "map" ? defaultSlot(st, selRow()) : null;
   ui.armed = null;
-}
-
-function moveSel(st, d) {
-  let i = ui.sel;
-  do { i += d; } while (i >= 0 && i < ui.rows.length && ui.rows[i].kind === "ws");
-  if (i >= 0 && i < ui.rows.length) ui.sel = i;
-  ui.slot = null; ui.armed = null;
 }
 
 function cyclePane(st, d) {
@@ -470,10 +567,10 @@ function slotAt(x, y) {
     if (h.isMe || x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) continue;
     const u = (x - r.x + 0.5) / r.w, v = (y - r.y + 0.5) / r.h;
     // herdr swaps only inside one tab, so the center (swap) zone exists only there.
-    if (h.sameTab && Math.abs(u - 0.5) < 0.2 && Math.abs(v - 0.5) < 0.2) return { pane: h.pane, side: "swap" };
+    if (h.sameTab && Math.abs(u - 0.5) < 0.2 && Math.abs(v - 0.5) < 0.2) return { pane: h.pane, side: "swap", i: h.i };
     const d = { left: u, right: 1 - u, up: v, down: 1 - v };
     const side = Object.keys(d).reduce((a, b) => (d[a] <= d[b] ? a : b));
-    return { pane: h.pane, side };
+    return { pane: h.pane, side, i: h.i };
   }
   return null;
 }
@@ -499,17 +596,18 @@ function onKey(st, k) {
   k = KEYMAP[k] ?? k;
   ui.msg = "";
   if (k === "\x03" || k === "q") return finish(st, false);
-  if (ui.focus === "list") {
-    if (k === "up" || k === "k") moveSel(st, -1);
-    else if (k === "down" || k === "j") moveSel(st, 1);
-    else if (k === "right" || k === "l" || k === "tab" || k === "enter") {
+  if (ui.focus === "overview") {
+    const dir = { up: "up", k: "up", down: "down", j: "down", left: "left", h: "left", right: "right", l: "right" }[k];
+    if (dir) ovMove(st, dir);
+    else if (k === "enter") {
       const row = selRow();
-      if (row.kind === "newtab" || row.kind === "newws") { if (k === "enter") return finish(st, true); }
-      else if (dropPanes(st, row).length) { ui.focus = "map"; setRowFromSel(st); }
-      else ui.msg = L.noTargets;
+      if (ui.slot && ui.armed) return finish(st, true); // a spot already picked with the mouse
+      if (row.kind === "newtab" || row.kind === "newws") return finish(st, true);
+      if (dropPanes(st, row).length) { ui.focus = "map"; setRowFromSel(st); }
+      else ui.msg = L.onlySelf;
     } else if (k === "esc") return finish(st, false);
   } else {
-    if (k === "esc") { ui.focus = "list"; ui.slot = null; }
+    if (k === "esc") { ui.focus = "overview"; ui.slot = null; ui.armed = null; ui.follow = true; }
     else if (k === "left" || k === "h") ui.slot.side = "left";
     else if (k === "right" || k === "l") ui.slot.side = "right";
     else if (k === "up" || k === "k") ui.slot.side = "up";
@@ -532,28 +630,40 @@ function onKey(st, k) {
 function onMouse(st, b, x, y, release) {
   x -= 1; y -= 1;
   const wheel = b & 64, motion = b & 32;
-  if (wheel) { if (x < ui.listW + 2) { moveSel(st, (b & 1) ? 1 : -1); if (ui.focus === "map") { ui.focus = "list"; } render(st); } return; }
+  if (wheel) {
+    if (ui.focus === "overview") { ui.ovTop = Math.max(0, ui.ovTop + ((b & 1) ? 1 : -1)); render(st); }
+    return;
+  }
   if (release) return;
-  const inList = x >= ui.listX && x < ui.listX + ui.listW && y >= ui.listY && y < ui.listY + ui.listH;
+  // overview titles and "+ new" tiles: hover picks one, a click acts on it
+  const t = ui.focus === "overview" && ui.tiles.find(({ r }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
   if (motion) {
-    // hover in the map previews the drop spot
+    if (t) {
+      if (t.i !== ui.sel || ui.slot) { ui.sel = t.i; ui.slot = null; ui.armed = null; ui.msg = ""; render(st); }
+      return;
+    }
+    // hover over a pane previews the drop spot; in the overview it also picks that tab
     const s = slotAt(x, y);
-    if (s && slotKey(s) !== slotKey(ui.slot)) { ui.focus = "map"; ui.slot = s; ui.armed = slotKey(s); render(st); }
+    if (s && slotKey(s) !== slotKey(ui.slot)) {
+      if (s.i !== undefined) ui.sel = s.i;
+      ui.slot = s; ui.armed = slotKey(s); render(st);
+    }
     return;
   }
   if ((b & 3) !== 0) return; // left button only
-  if (inList) {
-    const i = ui.top + (y - ui.listY);
-    const r = ui.rows[i];
-    if (!r || r.kind === "ws") return;
-    if (ui.sel === i && (r.kind === "newtab" || r.kind === "newws")) return finish(st, true);
-    ui.sel = i; ui.focus = "list"; ui.slot = null; ui.armed = null; ui.msg = "";
+  if (t) {
+    const r = ui.rows[t.i];
+    ui.sel = t.i; ui.slot = null; ui.armed = null; ui.msg = "";
+    if (r.kind === "newtab" || r.kind === "newws") return finish(st, true);
+    if (dropPanes(st, r).length) { ui.focus = "map"; setRowFromSel(st); }
+    else ui.msg = L.onlySelf;
     return render(st);
   }
   const s = slotAt(x, y);
   if (!s) return;
+  if (s.i !== undefined) ui.sel = s.i;
   if (ui.armed === slotKey(s)) { ui.slot = s; return finish(st, true); }
-  ui.focus = "map"; ui.slot = s; ui.armed = slotKey(s);
+  ui.slot = s; ui.armed = slotKey(s);
   ui.msg = L.clickAgain;
   render(st);
 }
@@ -576,7 +686,7 @@ function parse(st, s) {
 // ---------- main ----------
 
 function main() {
-  const dump = process.argv[2] === "--dump"; // --dump W H [paneId] [rowIndex] [slotPane side]
+  const dump = process.argv[2] === "--dump"; // --dump W H [paneId] [rowIndex] [slotPane side [overview]]
   let st;
   try { st = gather(dump ? process.argv[5] : null); }
   catch (e) { process.stderr.write("pane-easy-move: " + e.message + "\n"); process.exit(1); }
@@ -586,7 +696,7 @@ function main() {
   if (dump) {
     process.stdout.columns = +process.argv[3]; process.stdout.rows = +process.argv[4];
     if (process.argv[6]) ui.sel = +process.argv[6];
-    if (process.argv[7]) { ui.focus = "map"; ui.slot = { pane: process.argv[7], side: process.argv[8] || "right" }; }
+    if (process.argv[7]) { ui.focus = process.argv[9] === "overview" ? "overview" : "map"; ui.slot = { pane: process.argv[7], side: process.argv[8] || "right" }; }
     render(st);
     process.stdout.write("\n");
     return;
