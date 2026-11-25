@@ -11,7 +11,7 @@ Pane Easy Move draws it instead.
 The popup draws every tab as a small map, one row per workspace.
 When there are more tabs than fit, scroll to see the rest.
 Enter zooms into one tab and draws it to scale.
-You point at a pane and a side, a ghost shows where your pane will land, and one sentence at the bottom says what will happen.
+You drag any pane onto another pane's edge, a ghost shows where it will land, and one sentence at the bottom says what will happen.
 
 ## Install
 
@@ -47,10 +47,12 @@ Keyboard:
 
 Mouse:
 
-- Hover over a pane in a small map or in the zoomed map to preview. The edge you are near is the side the pane will attach to, and the center means swap.
-- Click the previewed spot to move. If your terminal does not report hover, the first click picks the spot and a second click moves.
-- Hovering over a tab title or a `+ new` tile picks it, and the picked one lights up.
-- Click a tab title to zoom in. Click `+ new tab` or `+ new workspace` once to move the pane there.
+- Drag any pane, not only the one you opened the popup from, and drop it on another pane's edge to move it there. Drop it on `+ new tab` or `+ new workspace` to give it a tab or workspace of its own.
+- While you drag, the pane turns green, a green ghost shows where it will land, a chip with its name follows the pointer, and the bottom line says what will happen. The center of a pane in the same tab means swap.
+- Hold the drag on the top or bottom edge of the overview to scroll to workspaces that are off screen. `Esc` cancels the drag.
+- The popup stays open after a drop and redraws the new layout, so you can keep rearranging. `u` puts the last dragged pane back, one step at a time.
+- Hovering over a pane outlines it. Hovering over a tab title or a `+ new` tile picks it, and the workspace it belongs to gets a pale blue background.
+- Click a tab title to zoom in. Click `+ new tab` or `+ new workspace` to move the pane you opened the popup from there.
 - The mouse wheel scrolls the overview.
 
 ## Language
@@ -65,6 +67,7 @@ language = "ko"
 ## Limits
 
 - Swap works only inside one tab, because herdr's `pane swap` refuses panes in different tabs.
+- Undo remembers a pane's neighbor and side, not its exact size, and a restored tab or workspace goes to the end of the list. The undo history ends when the popup closes.
 - The ghost shows the target pane split in half. herdr may rebalance the sizes afterwards, so the real result can differ slightly when the moving pane leaves the same tab.
 
 ## How it works

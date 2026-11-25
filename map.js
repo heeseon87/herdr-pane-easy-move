@@ -114,16 +114,22 @@ const S = {
   orange: ESC + "1;38;2;194;90;44m",
   blue: ESC + "1;38;2;44;85;196m",
   ghost: ESC + "1;38;2;255;255;255;48;2;44;85;196m",
+  dragGhost: ESC + "1;38;2;255;255;255;48;2;47;107;42m",
+  dragSrc: ESC + "38;2;47;107;42;48;2;222;232;214m",
+  green: ESC + "38;2;47;107;42m",
+  chip: ESC + "1;38;2;255;252;245;48;2;42;37;32m",
   ghostSoft: ESC + "38;2;44;85;196;48;2;214;224;248m",
   moving: ESC + "38;2;194;90;44;48;2;246;226;214m",
-  pick: ESC + "38;2;44;85;196;48;2;228;234;248m",
+  pick: ESC + "38;2;44;85;196;48;2;214;224;248m",
+  // workspace bands: a background laid under whatever is drawn on top
+  bandTarget: ESC + "48;2;228;234;246m", // the workspace the picked tab is in
 };
 
 let W = 100, H = 30, buf = [];
 function clear() {
   W = process.stdout.columns || 100;
   H = process.stdout.rows || 30;
-  buf = Array.from({ length: H }, () => Array.from({ length: W }, () => ({ ch: " ", st: "" })));
+  buf = Array.from({ length: H }, () => Array.from({ length: W }, () => ({ ch: " ", st: "", bg: "" })));
 }
 function put(x, y, s, st = "", maxX = W) {
   if (y < 0 || y >= H) return x;
@@ -132,8 +138,8 @@ function put(x, y, s, st = "", maxX = W) {
     if (k === 0) continue;
     if (x + k > maxX || x + k > W) break;
     if (x >= 0) {
-      buf[y][x] = { ch: c, st };
-      if (k === 2) buf[y][x + 1] = { ch: "", st };
+      buf[y][x] = { ch: c, st, bg: buf[y][x].bg };
+      if (k === 2) buf[y][x + 1] = { ch: "", st, bg: buf[y][x + 1].bg };
     }
     x += k;
   }
@@ -141,7 +147,12 @@ function put(x, y, s, st = "", maxX = W) {
 }
 function fill(x0, y0, w, h, st) {
   for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++)
-    if (y >= 0 && y < H && x >= 0 && x < W) buf[y][x] = { ch: " ", st };
+    if (y >= 0 && y < H && x >= 0 && x < W) buf[y][x] = { ch: " ", st, bg: buf[y][x].bg };
+}
+// Lay a background under a region; text drawn there later keeps it unless its own style sets one.
+function band(x0, y0, w, h, bg) {
+  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++)
+    if (y >= 0 && y < H && x >= 0 && x < W) buf[y][x].bg = bg;
 }
 function box(x, y, w, h, st) {
   if (w < 2 || h < 2) return;
@@ -155,7 +166,8 @@ function flush() {
     let cur = null;
     for (const c of buf[y]) {
       if (c.ch === "") continue;
-      if (c.st !== cur) { o += ESC + "0m" + c.st; cur = c.st; }
+      const k = (c.bg || "") + c.st;
+      if (k !== cur) { o += ESC + "0m" + k; cur = k; }
       o += c.ch;
     }
     o += ESC + "0m" + (y < H - 1 ? "\r\n" : "");
@@ -185,7 +197,8 @@ const ui = {
   tiles: [],            // overview titles and "+ new" tiles on screen: { i, r }
   ov: null,             // overview geometry from the last render
   ovTop: 0,             // first overview line on screen
-  follow: true,         // scroll the overview to the selection on the next render
+  follow: true,
+  undo: [],             // where dragged panes came from, newest last: u puts the last one back         // scroll the overview to the selection on the next render
   msg: "",
 };
 
@@ -221,11 +234,19 @@ const MSG = {
     zoomHint: (where) => `Enter zooms into ${where}.`,
     moreAbove: "▲ more above",
     moreBelow: "▼ more below",
-    keysOverview: "←↑→↓ pick tab · Enter zoom in · wheel scrolls · point at a pane edge and click to move · Esc close",
+    keysOverview: "←↑→↓ pick tab · Enter zoom in · wheel scrolls · drag any pane onto another pane's edge or a + new tile · u undo · Esc close",
     keysMap: "←↑→↓ side · Tab/number target pane · Space swap · Enter move · Esc back",
     pickFirst: "Pick a spot first.",
     swapSameTab: "Swap works only inside one tab (herdr limit).",
-    clickAgain: "Click the same spot again, or press Enter, to move.",
+    dragged: (name) => `Moved '${name}'. Press u to undo, drag another pane, or press Esc to close.`,
+    undone: (name) => `Put '${name}' back.`,
+    nothingToUndo: "Nothing to undo.",
+    undoLost: (name) => `Cannot put '${name}' back: its pane or its neighbor is gone.`,
+    dragHint: (name) => `Drag '${name}' onto another pane's edge to move it there.`,
+    dragNowhere: (name) => `Dragging '${name}'. Point at another pane's edge or a "+ new" tile.`,
+    dragLeaves: "↗ dragging (leaves here)",
+    dragFailed: (err) => `Move failed: ${err}`,
+    moving: (name) => `Moving '${name}'…`,
     noTarget: "could not find the pane to move",
   },
   ko: {
@@ -248,11 +269,19 @@ const MSG = {
     zoomHint: (where) => `Enter를 누르면 ${where} 탭을 크게 보여줘.`,
     moreAbove: "▲ 위에 더 있어",
     moreBelow: "▼ 아래에 더 있어",
-    keysOverview: "←↑→↓ 탭 고르기 · Enter 크게 보기 · 휠로 스크롤 · pane 가장자리를 가리키고 클릭하면 옮겨 · Esc 닫기",
+    keysOverview: "←↑→↓ 탭 고르기 · Enter 크게 보기 · 휠로 스크롤 · 아무 pane이나 끌어서 다른 pane 가장자리나 '+ 새' 칸에 놓기 · u 되돌리기 · Esc 닫기",
     keysMap: "←↑→↓ 붙일 쪽 · Tab/숫자 기준 pane · Space 자리 바꾸기 · Enter 실행 · Esc 전체 보기로",
     pickFirst: "먼저 붙일 자리를 골라.",
     swapSameTab: "자리 바꾸기는 같은 탭 안에서만 돼 (herdr 제약).",
-    clickAgain: "같은 자리를 한 번 더 누르거나 Enter를 누르면 옮겨.",
+    dragged: (name) => `'${name}' pane을 옮겼어. u로 되돌리거나, 다른 pane을 계속 끌거나, Esc로 닫아.`,
+    undone: (name) => `'${name}' pane을 원래 자리로 돌려놨어.`,
+    nothingToUndo: "되돌릴 게 없어.",
+    undoLost: (name) => `'${name}' pane을 되돌릴 수 없어: 그 pane이나 옆 pane이 없어졌어.`,
+    dragHint: (name) => `'${name}' pane을 끌어서 다른 pane 가장자리에 놓으면 거기로 옮겨.`,
+    dragNowhere: (name) => `'${name}' pane을 끄는 중이야. 다른 pane 가장자리나 "+ 새" 칸을 가리켜.`,
+    dragLeaves: "↗ 끄는 중 (여기서 빠져)",
+    dragFailed: (err) => `옮기지 못했어: ${err}`,
+    moving: (name) => `'${name}' pane을 옮기는 중…`,
     noTarget: "옮길 pane을 찾지 못했어",
   },
 };
@@ -302,14 +331,19 @@ function commands(st) {
   if (row.kind === "newtab") return [["pane", "move", T, "--new-tab", "--workspace", row.ws.workspace_id, "--focus"]];
   if (row.kind === "newws") return [["pane", "move", T, "--new-workspace", "--focus"]];
   if (row.kind !== "tab" || !ui.slot) return null;
-  const P = ui.slot.pane, side = ui.slot.side;
+  return placeCmds(tp, row.tab.tab_id, ui.slot, "--focus");
+}
+
+// Commands that put pane `src` on `slot.side` of pane `slot.pane` in tab `tabId`.
+function placeCmds(src, tabId, slot, focus) {
+  const T = src.pane_id, P = slot.pane, side = slot.side;
   if (side === "swap") return [["pane", "swap", "--source-pane", T, "--target-pane", P]];
   const cmds = [];
   // herdr cannot re-split inside one tab, so bounce the pane out first.
-  if (row.tab.tab_id === tp.tab_id)
-    cmds.push(["pane", "move", T, "--new-tab", "--workspace", tp.workspace_id, "--no-focus"]);
+  if (tabId === src.tab_id)
+    cmds.push(["pane", "move", T, "--new-tab", "--workspace", src.workspace_id, "--no-focus"]);
   const base = side === "left" || side === "up" ? (side === "left" ? "right" : "down") : side;
-  cmds.push(["pane", "move", T, "--tab", row.tab.tab_id, "--split", base, "--target-pane", P, "--focus"]);
+  cmds.push(["pane", "move", T, "--tab", tabId, "--split", base, "--target-pane", P, focus]);
   if (side === "left" || side === "up") cmds.push(["pane", "swap", "--source-pane", T, "--target-pane", P]);
   return cmds;
 }
@@ -349,15 +383,14 @@ function drawMap(st, x0, y0, w, h) {
     r.w = sx(lp.rect.x + lp.rect.width) - r.x;
     r.h = sy(lp.rect.y + lp.rect.height) - r.y;
     const p = paneById(st, lp.pane_id);
-    const isMe = lp.pane_id === st.target;
-    const isSlot = ui.slot && ui.slot.pane === lp.pane_id;
-    ui.hits.push({ pane: lp.pane_id, r, isMe, sameTab: row.tab.tab_id === st.tp.tab_id });
-    if (isMe) fill(r.x, r.y, r.w, r.h, S.moving);
-    box(r.x, r.y, r.w, r.h, isMe ? S.orange : isSlot ? S.blue : S.dim);
-    const nameSt = isMe ? S.moving + S.bold : S.bold;
-    put(r.x + 2, r.y + 1, fit(`${i + 1}  ${p ? paneName(p) : lp.pane_id}`, r.w - 4), nameSt, r.x + r.w - 1);
-    if (r.h > 3) put(r.x + 2, r.y + 2, fit(isMe ? L.movingHere : path.basename(p?.cwd || ""), r.w - 4), isMe ? S.moving : S.dim, r.x + r.w - 1);
-    if (isSlot) drawGhost(st, r);
+    const look = paneLook(st, lp.pane_id, false);
+    const ghost = ghostFor(st, lp.pane_id, true);
+    ui.hits.push({ pane: lp.pane_id, tab: row.tab.tab_id, r });
+    if (look.fill) fill(r.x, r.y, r.w, r.h, look.fill);
+    box(r.x, r.y, r.w, r.h, ghost && !dragging() ? S.blue : look.border);
+    put(r.x + 2, r.y + 1, fit(`${i + 1}  ${p ? paneName(p) : lp.pane_id}`, r.w - 4), look.note ? look.name : S.bold, r.x + r.w - 1);
+    if (r.h > 3) put(r.x + 2, r.y + 2, fit(look.note || path.basename(p?.cwd || ""), r.w - 4), look.note ? look.name : S.dim, r.x + r.w - 1);
+    if (ghost) drawGhost(r, ...ghost);
   });
   if (!dropPanes(st, row).length)
     put(x0, y0 + h, L.onlySelf, S.dim);
@@ -375,7 +408,7 @@ function ovLayout(st, w, h) {
   const tw = Math.max(16, Math.min(THUMB_MAX_W, Math.floor((gridW + 2) / cols) - 2));
   const th = Math.max(4, Math.min(THUMB_H, Math.floor(h / 2) - 2));
   // One or more lines per workspace, each holding up to `cols` tiles: its tabs, then "+ new tab" at the same size.
-  // Each workspace sits in a heavy frame: its first line carries the top border with the name, its last line the bottom border.
+  // A workspace's first line carries a name row; the last line ends with a padding row and a blank row.
   const lines = [];
   let idx = 0;
   for (const ws of st.workspaces) {
@@ -403,19 +436,36 @@ function ovMaxTop(g, h) {
   return t;
 }
 
-function drawGhost(st, r) {
-  const g = ghostRect(r, ui.slot.side);
-  if (ui.slot.side === "swap") {
+function drawGhost(r, slot, name, gst = S.ghost) {
+  const g = ghostRect(r, slot.side);
+  if (slot.side === "swap") {
     fill(g.x + 1, g.y + 1, g.w - 2, g.h - 2, S.ghostSoft);
     box(g.x, g.y, g.w, g.h, S.blue);
-    centerText(g, g.y + Math.floor(g.h / 2), L.swapBox(fit(paneName(st.tp), 16)), S.ghostSoft + S.bold);
+    centerText(g, g.y + Math.floor(g.h / 2), L.swapBox(fit(name, 16)), S.ghostSoft + S.bold);
     return;
   }
-  fill(g.x, g.y, g.w, g.h, S.ghost);
-  box(g.x, g.y, g.w, g.h, S.ghost);
-  const arrow = { left: "◀", right: "▶", up: "▲", down: "▼" }[ui.slot.side];
-  centerText(g, g.y + Math.floor(g.h / 2) - (g.h > 4 ? 1 : 0), `${arrow} ${L.here}`, S.ghost);
-  if (g.h > 4) centerText(g, g.y + Math.floor(g.h / 2), fit(paneName(st.tp), 20), S.ghost);
+  fill(g.x, g.y, g.w, g.h, gst);
+  box(g.x, g.y, g.w, g.h, gst);
+  const arrow = { left: "◀", right: "▶", up: "▲", down: "▼" }[slot.side];
+  centerText(g, g.y + Math.floor(g.h / 2) - (g.h > 4 ? 1 : 0), `${arrow} ${L.here}`, gst);
+  if (g.h > 4) centerText(g, g.y + Math.floor(g.h / 2), fit(name, 20), gst);
+}
+
+// How a pane is painted: the popup's pane orange, a dragged pane green and hollow, the hovered pane blue.
+function paneLook(st, id, on) {
+  if (isDragSrc(id)) return { fill: S.dragSrc, border: S.green, name: S.green + S.bold, note: L.dragLeaves };
+  if (id === st.target) return { fill: S.moving, border: S.orange, name: S.orange + S.bold, note: L.movingHere };
+  if (!dragging() && ui.hover === id) return { fill: on ? S.pick : null, border: S.blue, name: S.blue + S.bold };
+  if (on) return { fill: S.pick, border: S.pick, name: S.pick + S.bold };
+  return { fill: null, border: S.dim, name: S.n };
+}
+
+// While a pane is dragged, it is the one drawn as moving, and the ghost follows the drag.
+const dragging = () => ui.drag && ui.drag.active;
+const isDragSrc = (id) => dragging() && ui.drag.src.pane_id === id;
+function ghostFor(st, paneId, own) {
+  if (dragging()) return ui.drag.slot && ui.drag.slot.pane === paneId ? [ui.drag.slot, paneName(ui.drag.src), S.dragGhost] : null;
+  return own && ui.slot && ui.slot.pane === paneId ? [ui.slot, paneName(st.tp)] : null;
 }
 
 function drawThumb(st, i, row, x, y, tw, th, on) {
@@ -434,18 +484,18 @@ function drawThumb(st, i, row, x, y, tw, th, on) {
     r.w = sx(lp.rect.x + lp.rect.width) - r.x;
     r.h = sy(lp.rect.y + lp.rect.height) - r.y;
     const p = paneById(st, lp.pane_id);
-    const isMe = lp.pane_id === st.target;
-    const isSlot = on && ui.slot && ui.slot.pane === lp.pane_id;
-    ui.hits.push({ pane: lp.pane_id, r, isMe, sameTab: here, i });
-    // The picked tab lights up pale blue, so it is clear which one Enter or a click acts on.
-    if (isMe) fill(r.x, r.y, r.w, r.h, S.moving);
-    else if (on) fill(r.x, r.y, r.w, r.h, S.pick);
-    box(r.x, r.y, r.w, r.h, isMe ? S.orange : on ? S.pick : S.dim);
+    const look = paneLook(st, lp.pane_id, on);
+    const ghost = ghostFor(st, lp.pane_id, on);
+    ui.hits.push({ pane: lp.pane_id, tab: row.tab.tab_id, r, i });
+    // The picked tab lights up pale blue, so it is clear which one Enter acts on.
+    if (look.fill) fill(r.x, r.y, r.w, r.h, look.fill);
+    box(r.x, r.y, r.w, r.h, look.border);
     // The name sits on the top border, as herdr draws pane labels, so a 2-row pane still shows it.
-    if (r.w >= 5) put(r.x + 1, r.y, fit(`${n + 1} ${p ? paneName(p) : ""}`, r.w - 2), isMe ? S.orange : on ? S.pick + S.bold : S.n, r.x + r.w - 1);
-    if (isSlot) ghostAt = r;
+    if (r.w >= 5) put(r.x + 1, r.y, fit(`${n + 1} ${p ? paneName(p) : ""}`, r.w - 2), look.name, r.x + r.w - 1);
+    if (look.note && r.h > 2 && r.w > 6) put(r.x + 2, r.y + 1, fit(look.note, r.w - 4), look.name, r.x + r.w - 1);
+    if (ghost) ghostAt = [r, ghost];
   });
-  if (ghostAt) drawGhost(st, ghostAt);
+  if (ghostAt) drawGhost(ghostAt[0], ...ghostAt[1]);
 }
 
 // "+ new tab" / "+ new workspace". Picked, it opens into a ghost of the pane landing there alone.
@@ -455,11 +505,13 @@ function newTile(st, i, label, x, y, w, h, on) {
   put(x, y, on ? t + " ".repeat(Math.max(0, w - strW(t))) : t, on ? S.inv : S.dim);
   const r = { x, y: y + 1, w, h };
   const mid = r.y + Math.floor(r.h / 2);
-  if (on) {
-    fill(r.x, r.y, r.w, r.h, S.ghost);
-    box(r.x, r.y, r.w, r.h, S.ghost);
-    centerText(r, mid - 1, `▶ ${L.here}`, S.ghost);
-    centerText(r, mid, fit(paneName(st.tp), r.w - 4), S.ghost);
+  const dropHere = dragging() && ui.drag.slot && ui.drag.slot.tile === i;
+  if (dropHere || (on && !dragging())) {
+    const gst = dropHere ? S.dragGhost : S.ghost;
+    fill(r.x, r.y, r.w, r.h, gst);
+    box(r.x, r.y, r.w, r.h, gst);
+    centerText(r, mid - 1, `▶ ${L.here}`, gst);
+    centerText(r, mid, fit(paneName(dropHere ? ui.drag.src : st.tp), r.w - 4), gst);
   } else {
     put(r.x, r.y, "┌" + "╌".repeat(r.w - 2) + "┐", S.dim);
     for (let yy = r.y + 1; yy < r.y + r.h - 1; yy++) { put(r.x, yy, "╎", S.dim); put(r.x + r.w - 1, yy, "╎", S.dim); }
@@ -485,20 +537,18 @@ function drawOverview(st, x0, y0, w, h) {
     const line = g.lines[l];
     let ty = y;
     if (line.ws) {
-      // heavy frame around the workspace; blue when it holds the picked tab
+      // pale blue band behind the workspace that holds the picked tab
       const picked = ui.rows[ui.sel]?.ws === line.ws;
-      const fst = picked ? S.blue : S.n;
+      const here = line.ws.workspace_id === st.tp.workspace_id;
       const fh = line.h - (line.last ? 1 : 0);
-      for (let yy = y; yy < y + fh; yy++) { put(x0, yy, "┃", fst); put(x0 + w - 1, yy, "┃", fst); }
+      if (picked) band(x0, y, w, fh, S.bandTarget);
       if (line.first) {
-        put(x0, y, "┏" + "━".repeat(w - 2) + "┓", fst);
-        put(x0 + 2, y, ` ${fit(`${line.ws.number} ${line.ws.label}`, w - 8)} `, line.ws.workspace_id === st.tp.workspace_id ? S.orange : picked ? S.blue : S.bold);
+        put(x0 + 1, y, fit(`${line.ws.number} ${line.ws.label}`, w - 4), here ? S.orange : picked ? S.blue : S.bold);
         ty = y + 1;
       } else if (l === ui.ovTop) {
         // scrolled into the middle of a workspace: name it on the row above
         put(x0, y0 - 1, fit(`${line.ws.number} ${line.ws.label} …`, w - strW(L.moreAbove) - 4), S.dim);
       }
-      if (line.last) put(x0, y + fh - 1, "┗" + "━".repeat(w - 2) + "┛", fst);
     }
     for (const it of line.items) {
       const row = ui.rows[it.i], on = it.i === ui.sel;
@@ -528,6 +578,23 @@ function ovMove(st, dir) {
   ui.slot = null; ui.armed = null; ui.follow = true;
 }
 
+function dragText(st) {
+  const d = ui.drag, me = `'${fit(paneName(d.src), 24)}'`;
+  if (!d.slot) return L.dragNowhere(fit(paneName(d.src), 24));
+  if (d.slot.tile !== undefined) {
+    const r = ui.rows[d.slot.tile];
+    return r.kind === "newtab" ? L.toNewTab(me, `${r.ws.number} ${r.ws.label}`) : L.toNewWs(me);
+  }
+  const p = paneById(st, d.slot.pane);
+  const ws = st.workspaces.find((w) => w.workspace_id === p.workspace_id);
+  const tab = ws.tabs.find((t) => t.tab_id === p.tab_id);
+  const lay = layoutOf(st, tab);
+  const n = lay ? lay.panes.findIndex((x) => x.pane_id === p.pane_id) + 1 : "";
+  const other = `${n} '${fit(paneName(p), 20)}'`, where = tabTitle(ws, tab);
+  if (d.slot.side === "swap") return L.swap(me, where, other);
+  return L.place(me, where, other, L.side[d.slot.side]);
+}
+
 function render(st) {
   clear();
   const tx = put(1, 0, L.title + "  ", S.bold);
@@ -539,11 +606,18 @@ function render(st) {
     drawMap(st, 1, 3, W - 3, H - 8);
   } else drawOverview(st, 1, 3, W - 2, H - 7);
   // bottom: the action in words, then keys
-  let d = describe(st);
+  let d = dragging() ? dragText(st) : describe(st);
+  if (!d && ui.hover) d = L.dragHint(paneName(paneById(st, ui.hover) || { pane_id: ui.hover }));
   if (!d && ui.focus === "overview" && row?.kind === "tab") d = L.zoomHint(tabTitle(row.ws, row.tab));
-  put(1, H - 3, d ? "→ " + fit(d, W - 4) : "", S.blue);
+  put(1, H - 3, d ? "→ " + fit(d, W - 4) : "", dragging() ? S.green + S.bold : S.blue);
   put(1, H - 2, fit(ui.focus === "map" ? L.keysMap : L.keysOverview, W - 2), S.dim);
   if (ui.msg) put(1, H - 1, fit(ui.msg, W - 2), S.orange);
+  if (dragging()) {
+    // a chip with the dragged pane's name rides next to the pointer
+    const label = ` ✥ ${fit(paneName(ui.drag.src), 24)} `;
+    const cx = Math.min(W - strW(label) - 1, ui.drag.mx + 2), cy = Math.min(H - 1, ui.drag.my + 1);
+    put(cx, cy, label, S.chip);
+  }
   flush();
 }
 
@@ -561,13 +635,13 @@ function cyclePane(st, d) {
   ui.slot = { pane: c[(i + d + c.length) % c.length].pane_id, side: ui.slot?.side === "swap" ? "swap" : ui.slot?.side || "right" };
 }
 
-function slotAt(x, y) {
+function slotAt(st, x, y, src = st.tp) {
   for (const h of ui.hits) {
     const { r } = h;
-    if (h.isMe || x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) continue;
+    if (h.pane === src.pane_id || x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) continue;
     const u = (x - r.x + 0.5) / r.w, v = (y - r.y + 0.5) / r.h;
     // herdr swaps only inside one tab, so the center (swap) zone exists only there.
-    if (h.sameTab && Math.abs(u - 0.5) < 0.2 && Math.abs(v - 0.5) < 0.2) return { pane: h.pane, side: "swap", i: h.i };
+    if (h.tab === src.tab_id && Math.abs(u - 0.5) < 0.2 && Math.abs(v - 0.5) < 0.2) return { pane: h.pane, side: "swap", i: h.i };
     const d = { left: u, right: 1 - u, up: v, down: 1 - v };
     const side = Object.keys(d).reduce((a, b) => (d[a] <= d[b] ? a : b));
     return { pane: h.pane, side, i: h.i };
@@ -590,18 +664,19 @@ function finish(st, run) {
   process.exit(0);
 }
 
-const KEYMAP = { "ㅂ": "q", "ㅗ": "h", "ㅓ": "j", "ㅏ": "k", "ㅣ": "l" };
+const KEYMAP = { "ㅂ": "q", "ㅗ": "h", "ㅓ": "j", "ㅏ": "k", "ㅣ": "l", "ㅕ": "u" };
 
 function onKey(st, k) {
   k = KEYMAP[k] ?? k;
   ui.msg = "";
+  if (dragging() && k === "esc") { stopDrag(); return render(st); } // Esc drops the drag, not the popup
+  if (!dragging() && k === "u") return undo(st);
   if (k === "\x03" || k === "q") return finish(st, false);
   if (ui.focus === "overview") {
     const dir = { up: "up", k: "up", down: "down", j: "down", left: "left", h: "left", right: "right", l: "right" }[k];
     if (dir) ovMove(st, dir);
     else if (k === "enter") {
       const row = selRow();
-      if (ui.slot && ui.armed) return finish(st, true); // a spot already picked with the mouse
       if (row.kind === "newtab" || row.kind === "newws") return finish(st, true);
       if (dropPanes(st, row).length) { ui.focus = "map"; setRowFromSel(st); }
       else ui.msg = L.onlySelf;
@@ -627,6 +702,15 @@ function onKey(st, k) {
   render(st);
 }
 
+function paneAt(st, x, y) {
+  const h = ui.hits.find(({ r }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  return h ? paneById(st, h.pane) : null;
+}
+
+function tileAt(x, y) {
+  return ui.focus === "overview" ? ui.tiles.find(({ r }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) : null;
+}
+
 function onMouse(st, b, x, y, release) {
   x -= 1; y -= 1;
   const wheel = b & 64, motion = b & 32;
@@ -634,38 +718,182 @@ function onMouse(st, b, x, y, release) {
     if (ui.focus === "overview") { ui.ovTop = Math.max(0, ui.ovTop + ((b & 1) ? 1 : -1)); render(st); }
     return;
   }
-  if (release) return;
-  // overview titles and "+ new" tiles: hover picks one, a click acts on it
-  const t = ui.focus === "overview" && ui.tiles.find(({ r }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  if ((b & 3) !== 0 && !(motion && (b & 3) === 3)) return; // left button (or plain motion) only
+  const t = tileAt(x, y);
+  if (release) {
+    const d = ui.drag;
+    stopDrag();
+    if (!d) return;
+    if (d.active) return d.slot ? dropDragged(st, d) : render(st);
+    return click(st, x, y, t);
+  }
+  if (motion && (b & 3) === 0 && ui.drag) {
+    // button held: past two cells it is a drag; the ghost and the chip follow the pointer
+    const d = ui.drag;
+    if (!d.active && Math.abs(x - d.x) + Math.abs(y - d.y) < 2) return;
+    d.active = true; d.mx = x; d.my = y;
+    aimDrag(st);
+    edgeScroll(st);
+    ui.hover = null; ui.msg = "";
+    return render(st);
+  }
   if (motion) {
+    // plain hover: a tile picks itself; a pane only lights up, to show it can be dragged
     if (t) {
-      if (t.i !== ui.sel || ui.slot) { ui.sel = t.i; ui.slot = null; ui.armed = null; ui.msg = ""; render(st); }
+      if (t.i !== ui.sel || ui.hover) { ui.sel = t.i; ui.hover = null; ui.msg = ""; render(st); }
       return;
     }
-    // hover over a pane previews the drop spot; in the overview it also picks that tab
-    const s = slotAt(x, y);
-    if (s && slotKey(s) !== slotKey(ui.slot)) {
-      if (s.i !== undefined) ui.sel = s.i;
-      ui.slot = s; ui.armed = slotKey(s); render(st);
-    }
+    const id = paneAt(st, x, y)?.pane_id || null;
+    if (id !== ui.hover) { ui.hover = id; render(st); }
     return;
   }
-  if ((b & 3) !== 0) return; // left button only
+  // button down: on a pane it may become a drag, so wait for the release to decide
+  const p = !t && paneAt(st, x, y);
+  if (p) { ui.drag = { src: p, x, y, mx: x, my: y, active: false, slot: null }; return; }
+  click(st, x, y, t);
+}
+
+// Point the drag at whatever is under the pointer: a "+ new" tile or a pane edge.
+function aimDrag(st) {
+  const d = ui.drag, t = tileAt(d.mx, d.my), tr = t && ui.rows[t.i];
+  d.slot = tr && (tr.kind === "newtab" || tr.kind === "newws") ? { tile: t.i } : slotAt(st, d.mx, d.my, d.src);
+  const i = d.slot ? (d.slot.tile ?? d.slot.i) : undefined;
+  if (i !== undefined) ui.sel = i; // the target workspace gets the blue band
+}
+
+// Holding a drag on the overview's top or bottom rows keeps scrolling it, so off-screen workspaces are reachable.
+let scrollTimer = null;
+function edgeScroll(st) {
+  const top = 3, bottom = H - 5; // the overview's first and last rows (see render)
+  const dir = ui.focus !== "overview" ? 0 : ui.drag.my <= top ? -1 : ui.drag.my >= bottom ? 1 : 0;
+  if (!dir) { clearInterval(scrollTimer); scrollTimer = null; return; }
+  if (scrollTimer && scrollTimer.dir === dir) return;
+  clearInterval(scrollTimer);
+  scrollTimer = setInterval(() => {
+    if (!dragging()) return stopDrag();
+    const before = ui.ovTop;
+    ui.ovTop = Math.max(0, ui.ovTop + dir);
+    render(st); // clamps ovTop and redraws the hit areas under the pointer
+    if (ui.ovTop === before) return;
+    aimDrag(st);
+    render(st);
+  }, 150);
+  scrollTimer.dir = dir;
+}
+
+function stopDrag() {
+  ui.drag = null;
+  clearInterval(scrollTimer); scrollTimer = null;
+}
+
+// A click that did not become a drag: tiles act, a pane in the overview picks its tab.
+function click(st, x, y, t) {
   if (t) {
     const r = ui.rows[t.i];
-    ui.sel = t.i; ui.slot = null; ui.armed = null; ui.msg = "";
+    ui.sel = t.i; ui.slot = null; ui.msg = "";
     if (r.kind === "newtab" || r.kind === "newws") return finish(st, true);
     if (dropPanes(st, r).length) { ui.focus = "map"; setRowFromSel(st); }
     else ui.msg = L.onlySelf;
     return render(st);
   }
-  const s = slotAt(x, y);
-  if (!s) return;
-  if (s.i !== undefined) ui.sel = s.i;
-  if (ui.armed === slotKey(s)) { ui.slot = s; return finish(st, true); }
-  ui.slot = s; ui.armed = slotKey(s);
-  ui.msg = L.clickAgain;
+  const h = ui.hits.find(({ r }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  if (h && h.i !== undefined && h.i !== ui.sel) { ui.sel = h.i; render(st); }
+}
+
+// Run a drag's move right away and keep the popup open on the new layout.
+function dropDragged(st, d) {
+  ui.msg = L.moving(paneName(d.src));
   render(st);
+
+  setImmediate(() => runDrop(st, d));
+}
+
+const termOf = (p) => p.terminal_id || p.pane_id; // stays the same when herdr renumbers a moved pane
+const byTerm = (st, k) => st.panes.find((p) => termOf(p) === k);
+
+// Where a pane sits now, as a recipe to put it back: beside a neighbor in its tab, or alone in a new tab or workspace.
+function spotOf(st, src) {
+  const ws = st.workspaces.find((w) => w.workspace_id === src.workspace_id);
+  const tab = ws && ws.tabs.find((t) => t.tab_id === src.tab_id);
+  const lay = tab && layoutOf(st, tab);
+  const spot = { term: termOf(src), name: paneName(src), ws: src.workspace_id, tabLabel: tab && tab.label };
+  const me = lay && lay.panes.find((q) => q.pane_id === src.pane_id);
+  const others = lay ? lay.panes.filter((q) => q.pane_id !== src.pane_id) : [];
+  if (!me || !others.length) return { ...spot, alone: ws && ws.tabs.length > 1 ? "tab" : "ws" };
+  const R = me.rect, near = (a, b) => Math.abs(a - b) <= 1;
+  const cands = [];
+  for (const q of others) {
+    const Q = q.rect;
+    const vOv = Math.min(R.y + R.height, Q.y + Q.height) - Math.max(R.y, Q.y) > 0;
+    const hOv = Math.min(R.x + R.width, Q.x + Q.width) - Math.max(R.x, Q.x) > 0;
+    const sameRow = near(Q.y, R.y) && near(Q.height, R.height), sameCol = near(Q.x, R.x) && near(Q.width, R.width);
+    if (near(Q.x + Q.width, R.x) && vOv) cands.push({ q, side: "right", exact: sameRow });
+    if (near(Q.y + Q.height, R.y) && hOv) cands.push({ q, side: "down", exact: sameCol });
+    if (near(R.x + R.width, Q.x) && vOv) cands.push({ q, side: "left", exact: sameRow });
+    if (near(R.y + R.height, Q.y) && hOv) cands.push({ q, side: "up", exact: sameCol });
+  }
+  const c = cands.find((x) => x.exact) || cands[0];
+  if (!c) return { ...spot, alone: "tab" };
+  return { ...spot, near: termOf(paneById(st, c.q.pane_id) || { pane_id: c.q.pane_id }), side: c.side };
+}
+
+function undoCmds(st, u) {
+  const src = byTerm(st, u.term);
+  if (!src) return null;
+  if (u.alone === "tab" && st.workspaces.some((w) => w.workspace_id === u.ws))
+    return [["pane", "move", src.pane_id, "--new-tab", "--workspace", u.ws, "--no-focus"]];
+  if (u.alone) return [["pane", "move", src.pane_id, "--new-workspace", "--no-focus"]];
+  const q = byTerm(st, u.near);
+  return q ? placeCmds(src, q.tab_id, { pane: q.pane_id, side: u.side }, "--no-focus") : null;
+}
+
+function undo(st) {
+  const u = ui.undo.pop();
+  if (!u) { ui.msg = L.nothingToUndo; return render(st); }
+  const cmds = undoCmds(st, u);
+  if (!cmds) { ui.msg = L.undoLost(u.name); return render(st); }
+  ui.msg = L.moving(u.name);
+  render(st);
+  setImmediate(() => {
+    if (!runMove(st, cmds, L.undone(u.name)) || !u.alone || !u.tabLabel) return;
+    // a pane that had a tab to itself comes back in a fresh tab: give it the old tab's name
+    const p = byTerm(st, u.term), tab = p && st.workspaces.flatMap((w) => w.tabs).find((t) => t.tab_id === p.tab_id);
+    if (tab && spawnSync(herdr, ["tab", "rename", tab.tab_id, u.tabLabel], { encoding: "utf8" }).status === 0) { tab.label = u.tabLabel; render(st); }
+  });
+}
+
+function runDrop(st, d) {
+  const T = d.src.pane_id, tile = d.slot.tile !== undefined && ui.rows[d.slot.tile];
+  const cmds = !tile ? placeCmds(d.src, paneById(st, d.slot.pane).tab_id, d.slot, "--no-focus")
+    : tile.kind === "newtab" ? [["pane", "move", T, "--new-tab", "--workspace", tile.ws.workspace_id, "--no-focus"]]
+    : [["pane", "move", T, "--new-workspace", "--no-focus"]];
+  const spot = spotOf(st, d.src);
+  if (runMove(st, cmds, L.dragged(paneName(d.src)))) ui.undo.push(spot);
+}
+
+// Run herdr commands, then read the layout again and redraw. Returns true when every command succeeded.
+function runMove(st, cmds, okMsg) {
+  let err = "";
+  for (const args of cmds) {
+    const r = spawnSync(herdr, args, { encoding: "utf8" });
+    if (r.status !== 0) { err = (r.stderr || r.stdout || "").trim() || `exit ${r.status}`; break; }
+  }
+  // Pane ids can change when a pane moves, so find the popup's own pane again by its terminal.
+  const term = termOf(st.tp), selTab = selRow()?.tab?.tab_id;
+  try {
+    const fresh = gather(st.target);
+    const tp = fresh.panes.find((p) => termOf(p) === term) || fresh.tp;
+    if (tp) { fresh.tp = tp; fresh.target = tp.pane_id; }
+    Object.assign(st, fresh);
+  } catch (e) { err = err || e.message; }
+  ui.rows = buildRows(st);
+  const i = ui.rows.findIndex((r) => r.kind === "tab" && r.tab.tab_id === selTab);
+  ui.sel = i >= 0 ? i : Math.min(ui.sel, ui.rows.length - 1);
+  if (ui.focus === "map" && selRow().kind !== "tab") ui.focus = "overview";
+  ui.slot = null; ui.armed = null; ui.hover = null;
+  ui.msg = err ? L.dragFailed(err) : okMsg;
+  render(st);
+  return !err;
 }
 
 function parse(st, s) {
