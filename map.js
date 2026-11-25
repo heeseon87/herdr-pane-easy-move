@@ -14,9 +14,10 @@ const path = require("node:path");
 if (process.argv[2] === "--exec") {
   const cmds = JSON.parse(process.argv[3]);
   const bin = process.env.HERDR_BIN_PATH ?? "herdr";
-  setTimeout(() => {
+  setTimeout(async () => {
     const log = [];
     for (const args of cmds) {
+      if (args[0] === "@focus") { log.push({ args, ...(await focusPane(args[1])) }); continue; }
       const r = spawnSync(bin, args, { encoding: "utf8" });
       log.push({ args, status: r.status, err: (r.stderr || "").trim() });
       if (r.status !== 0) break;
@@ -28,6 +29,18 @@ if (process.argv[2] === "--exec") {
     process.exit(0);
   }, 200);
   return;
+}
+
+// The CLI has no "focus this pane" command, so ask the herdr socket directly.
+function focusPane(paneId) {
+  return new Promise((done) => {
+    const c = require("node:net").connect(process.env.HERDR_SOCKET_PATH);
+    const end = (r) => { c.destroy(); done(r); };
+    c.on("error", (e) => end({ status: 1, err: e.message }));
+    c.on("data", (b) => end({ status: /"error"/.test(b) ? 1 : 0, err: /"error"/.test(b) ? String(b).trim() : "" }));
+    c.write(JSON.stringify({ id: "1", method: "pane.focus", params: { pane_id: paneId } }) + "\n");
+    setTimeout(() => end({ status: 1, err: "timeout" }), 2000);
+  });
 }
 
 const herdr = process.env.HERDR_BIN_PATH ?? "herdr";
@@ -242,7 +255,7 @@ const MSG = {
     undone: (name) => `Put '${name}' back.`,
     nothingToUndo: "Nothing to undo.",
     undoLost: (name) => `Cannot put '${name}' back: its pane or its neighbor is gone.`,
-    dragHint: (name) => `Drag '${name}' onto another pane's edge to move it there.`,
+    dragHint: (name) => `Drag '${name}' onto another pane's edge to move it there, or double-click to go to it.`,
     dragNowhere: (name) => `Dragging '${name}'. Point at another pane's edge or a "+ new" tile.`,
     dragLeaves: "↗ dragging (leaves here)",
     dragFailed: (err) => `Move failed: ${err}`,
@@ -277,7 +290,7 @@ const MSG = {
     undone: (name) => `'${name}' pane을 원래 자리로 돌려놨어.`,
     nothingToUndo: "되돌릴 게 없어.",
     undoLost: (name) => `'${name}' pane을 되돌릴 수 없어: 그 pane이나 옆 pane이 없어졌어.`,
-    dragHint: (name) => `'${name}' pane을 끌어서 다른 pane 가장자리에 놓으면 거기로 옮겨.`,
+    dragHint: (name) => `'${name}' pane을 끌어서 다른 pane 가장자리에 놓으면 거기로 옮겨. 더블클릭하면 그 pane으로 이동해.`,
     dragNowhere: (name) => `'${name}' pane을 끄는 중이야. 다른 pane 가장자리나 "+ 새" 칸을 가리켜.`,
     dragLeaves: "↗ 끄는 중 (여기서 빠져)",
     dragFailed: (err) => `옮기지 못했어: ${err}`,
@@ -743,8 +756,11 @@ function onMouse(st, b, x, y, release) {
       if (t.i !== ui.sel || ui.hover) { ui.sel = t.i; ui.hover = null; ui.msg = ""; render(st); }
       return;
     }
-    const id = paneAt(st, x, y)?.pane_id || null;
-    if (id !== ui.hover) { ui.hover = id; render(st); }
+    const h = ui.hits.find(({ r }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+    const id = h ? h.pane : null;
+    // in the overview a hovered pane also picks its tab, so its workspace gets the blue band
+    const sel = h && h.i !== undefined ? h.i : ui.sel;
+    if (id !== ui.hover || sel !== ui.sel) { ui.hover = id; ui.sel = sel; render(st); }
     return;
   }
   // button down: on a pane it may become a drag, so wait for the release to decide
@@ -797,7 +813,20 @@ function click(st, x, y, t) {
     return render(st);
   }
   const h = ui.hits.find(({ r }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  // a second click on the same pane soon after the first: close the popup and go to that pane
+  const now = Date.now(), last = ui.lastClick;
+  ui.lastClick = h ? { pane: h.pane, at: now } : null;
+  if (h && last && last.pane === h.pane && now - last.at < 400) return goTo(st, h.pane);
   if (h && h.i !== undefined && h.i !== ui.sel) { ui.sel = h.i; render(st); }
+}
+
+function goTo(st, paneId) {
+  if (done) return;
+  done = true;
+  process.stdout.write(ESC + "?1003l" + ESC + "?1006l" + ESC + "?1000l" + ESC + "?25h" + ESC + "?1049l");
+  try { process.stdin.setRawMode(false); } catch {}
+  spawn(process.execPath, [__filename, "--exec", JSON.stringify([["@focus", paneId]])], { detached: true, stdio: "ignore", env: process.env }).unref();
+  process.exit(0);
 }
 
 // Run a drag's move right away and keep the popup open on the new layout.
